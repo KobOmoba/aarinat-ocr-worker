@@ -1,11 +1,6 @@
 name = "aarinat-ocr"
 main = "src/index.js"
 compatibility_date = "2024-06-21"
-compatibility_flags = ["nodejs_compat"]
 
 [vars]
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-
-# GROQ_API_KEY must be set as a secret in the Cloudflare dashboard:
-# Workers & Pages → aarinat-ocr → Settings → Variables and Secrets → Add
-# Name: GROQ_API_KEY   Value: your gsk_... key   Toggle Encrypt ON

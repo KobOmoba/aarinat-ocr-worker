@@ -1,6 +1,7 @@
-// AariNAT OCR — Cloudflare Worker v2.4
-// Groq Vision + qwen/qwen3.6-27b (replaces deprecated llama-4-scout)
-// reasoning_effort=none prevents thinking tokens from breaking JSON parse
+// AariNAT OCR — Cloudflare Worker v2.5
+// Groq Vision + qwen/qwen3.6-27b
+// Key fix: strip Qwen3 <think>...</think> blocks before JSON parsing
+// Also: remove reasoning_effort (may be ignored by Groq and cause silent issues)
 
 const PROMPT = `You are a relentless data extraction bot. You have been given an image of a Nigerian school register. Your ONLY job is to find and return every single student row — no exceptions.
 
@@ -32,7 +33,7 @@ Firstnames: GODWIN, MICHEAL, BLESSING, AMINAT, DEBORAH, GABRIEL, RASAQ, ENOCH,
             TOHEEB, SALAM, WAJUD, IBRAHIM, RAHMON, SUCCESS, EZEKIEL, EMMANUEL
 
 STEP 4 — OUTPUT
-Return ONLY a valid JSON object. No markdown. No explanation. Nothing else.
+Return ONLY a valid JSON object. No markdown, no explanation, nothing else. No <think> blocks.
 The array MUST have one object per student row — every single one.
 
 {"students":[
@@ -53,13 +54,22 @@ function resp(data, status = 200) {
 }
 
 function extractJSON(raw) {
-  raw = raw.trim()
+  // ── Strip Qwen3 thinking tokens (emitted even in "non-thinking" mode) ──
+  // Format: <think>...reasoning...</think> followed by actual JSON
+  raw = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+  // Strip markdown code fences
+  raw = raw
     .replace(/^```json?\s*/i, '')
     .replace(/\s*```$/, '')
     .trim();
+
   try { return JSON.parse(raw); } catch (e) {}
+
+  // Try extracting the outermost JSON object
   const m = raw.match(/\{[\s\S]*\}/);
   if (m) try { return JSON.parse(m[0]); } catch (e) {}
+
   // Truncated JSON repair — salvage complete student objects even if array is cut off
   const students = [];
   for (const match of raw.matchAll(/\{[^{}]*"surname"\s*:\s*"([^"]+)"[^{}]*"firstname"\s*:\s*"([^"]+)"[^{}]*\}/g)) {
@@ -96,9 +106,9 @@ export default {
 
     if (request.method === 'GET') {
       return resp({
-        name: 'AariNAT OCR API', version: '2.4', status: 'live',
+        name: 'AariNAT OCR API', version: '2.5', status: 'live',
         provider: 'Groq Vision — Qwen 3.6 27B',
-        technique: 'Exhaustive row-count + 8192 tokens + truncated JSON repair + non-thinking mode',
+        technique: 'Exhaustive row-count + 8192 tokens + <think> strip + truncated JSON repair',
         usage: 'POST with { base64: "...", mime: "image/jpeg" }',
       });
     }
@@ -112,10 +122,19 @@ export default {
     const { base64, mime = 'image/jpeg' } = body;
     if (!base64) return resp({ error: 'base64 required' }, 400);
 
+    // Warn if image is likely too large for Groq (4MB base64 limit)
+    const estimatedBytes = base64.length * 0.75;
+    if (estimatedBytes > 4 * 1024 * 1024) {
+      return resp({
+        error: `Image too large: ~${Math.round(estimatedBytes/1024/1024)}MB decoded. Groq limit is 4MB. Resize image before sending.`,
+        students: [],
+        hint: 'resize'
+      }, 413);
+    }
+
     const apiKey = env.GROQ_API_KEY;
     if (!apiKey) return resp({ error: 'GROQ_API_KEY not configured' }, 500);
 
-    // qwen/qwen3.6-27b is the current Groq vision model (llama-4-scout deprecated June 17 2026)
     const model = env.GROQ_MODEL || 'qwen/qwen3.6-27b';
 
     // 25-second hard timeout — just under Cloudflare Workers 30s wall limit
@@ -139,9 +158,9 @@ export default {
               { type: 'text', text: PROMPT },
             ],
           }],
-          max_tokens:      8192,
-          temperature:     0.1,
-          reasoning_effort: 'none',   // disable Qwen thinking tokens — keep response plain JSON
+          max_tokens:  8192,
+          temperature: 0.7,   // Qwen3.6 non-thinking mode recommended temperature
+          top_p:       0.8,
         }),
       });
       clearTimeout(timer);
@@ -155,7 +174,7 @@ export default {
 
     if (!groqRes.ok) {
       const err = await groqRes.text();
-      return resp({ error: `Groq ${groqRes.status}: ${err.slice(0, 300)}`, students: [] }, 502);
+      return resp({ error: `Groq ${groqRes.status}: ${err.slice(0, 400)}`, students: [] }, 502);
     }
 
     const data     = await groqRes.json();
@@ -163,6 +182,12 @@ export default {
     const parsed   = extractJSON(raw);
     const students = cleanStudents(parsed.students);
 
-    return resp({ students, provider: 'AariNAT-OCR-Groq', model, count: students.length });
+    return resp({
+      students,
+      provider: 'AariNAT-OCR-Groq',
+      model,
+      count: students.length,
+      rawLength: raw.length,   // useful for debugging — shows if thinking tokens are big
+    });
   },
 };

@@ -1,5 +1,6 @@
-// AariNAT OCR — Cloudflare Worker v2.3
-// Groq Vision + exhaustive row-counting prompt + 8192 tokens + truncated JSON repair
+// AariNAT OCR — Cloudflare Worker v2.4
+// Groq Vision + qwen/qwen3.6-27b (replaces deprecated llama-4-scout)
+// reasoning_effort=none prevents thinking tokens from breaking JSON parse
 
 const PROMPT = `You are a relentless data extraction bot. You have been given an image of a Nigerian school register. Your ONLY job is to find and return every single student row — no exceptions.
 
@@ -95,9 +96,9 @@ export default {
 
     if (request.method === 'GET') {
       return resp({
-        name: 'AariNAT OCR API', version: '2.3', status: 'live',
-        provider: 'Groq Vision — Llama 4 Scout',
-        technique: 'Exhaustive row-count + 8192 tokens + truncated JSON repair',
+        name: 'AariNAT OCR API', version: '2.4', status: 'live',
+        provider: 'Groq Vision — Qwen 3.6 27B',
+        technique: 'Exhaustive row-count + 8192 tokens + truncated JSON repair + non-thinking mode',
         usage: 'POST with { base64: "...", mime: "image/jpeg" }',
       });
     }
@@ -114,7 +115,8 @@ export default {
     const apiKey = env.GROQ_API_KEY;
     if (!apiKey) return resp({ error: 'GROQ_API_KEY not configured' }, 500);
 
-    const model = env.GROQ_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
+    // qwen/qwen3.6-27b is the current Groq vision model (llama-4-scout deprecated June 17 2026)
+    const model = env.GROQ_MODEL || 'qwen/qwen3.6-27b';
 
     // 25-second hard timeout — just under Cloudflare Workers 30s wall limit
     const controller = new AbortController();
@@ -137,8 +139,9 @@ export default {
               { type: 'text', text: PROMPT },
             ],
           }],
-          max_tokens:  8192,
-          temperature: 0.1,
+          max_tokens:      8192,
+          temperature:     0.1,
+          reasoning_effort: 'none',   // disable Qwen thinking tokens — keep response plain JSON
         }),
       });
       clearTimeout(timer);
